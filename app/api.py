@@ -8,7 +8,7 @@ from flask import Blueprint, Response, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import check_password_hash
 from .models import db, User
-from .utils import search_known_issues, get_embedding
+from .utils import search_sla, get_embedding, generate_document_hash, extract_text_with_ocr, extract_text_from_pdf
 from . import redis_client
 from datetime import timedelta
 from .config import Config
@@ -73,99 +73,55 @@ def login_user():
     return jsonify(access_token=access_token)
 
 
-@api_bp.route('/search', methods=['POST'])
+@api_bp.route('/check-sla', methods=['POST'])
 @jwt_required()
-def get_ai_response():
-    """Classify a user query with caching and rate limiting."""
-    logging.info("Search endpoint accessed")
+def check_sla():
+    """
+    Endpoint to check if the SLA is met based on the provided title and message.
+    The response will include information about whether the SLA was violated and if a penalty applies.
+    """
+    logging.info("SLA Check endpoint accessed")
     user_identity = get_jwt_identity()
-    rate_limit_key = f"rate_limit:{user_identity}"
-    logging.debug(f"Rate limiting key: {rate_limit_key}")
 
-    start_time = time.time()  # Start tracking response time
-
-    # Get current count of requests made in the rate-limit window
-    current_count = redis_client.get(
-        rate_limit_key) if Config.USE_REDIS else None
-    if current_count:
-        logging.debug(
-            f"Current request count for user '{user_identity}': {current_count.decode()}")
-    else:
-        logging.debug(
-            f"No current request count found for user '{user_identity}'.")
-
-    # Check rate limit
-    if Config.USE_REDIS and current_count and int(current_count) >= Config.RATE_LIMIT_MAX_REQUESTS:
-        logging.warning(f"Rate limit exceeded for user '{user_identity}'")
-        return jsonify({"msg": "Rate limit exceeded, try again later."}), 429
-
-    # Retrieve the user query
+    # Retrieve the problem title and message from the user
     data = request.get_json()
-    query = data.get("query")
-    if not query:
-        logging.warning("Search request missing 'query' parameter")
-        return jsonify({"msg": "Query is required"}), 400
+    title = data.get("title")
+    message = data.get("message")
 
-    # Check Redis cache for a stored result
-    cached_result = None
-    if Config.USE_REDIS:
-        cached_result = redis_client.get(query)
-        if cached_result:
-            elapsed_time = round(time.time() - start_time, 2)
-            logging.info(f"Cache hit for query: '{query}'")
-            decoded_result = json.loads(cached_result)
-            # Construct the response in the desired order using OrderedDict
-            response = OrderedDict([
-                ("response", decoded_result.get(
-                    "solution", "No solution available")),
-                ("cached", "true"),
-                ("time", elapsed_time)
-            ])
-            # Return with consistent key order
-            return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+    if not title or not message:
+        logging.warning("Missing title or message in SLA check request")
+        return jsonify({"msg": "Title and message are required"}), 400
 
-    # If not cached, query Elasticsearch and classify
     try:
-        ai_response, cache_hit, elapsed_time = search_known_issues(query, es)
-        solution = ai_response.get("solution")  # Only extract the solution
+        # Call the search_sla function to search for relevant documents based on title and message
+        result, cache_hit, elapsed_time = search_sla(f"{title} {message}", es)
+
+        if "msg" in result:
+            return jsonify(result), 500  # Return error message if there's an issue
+
+        sla_info = result.get("solution", "No sla found")
+
+        # Check if the SLA has been violated based on the message
+        sla_violated = "Penalty" if "delay" in message.lower() else "No penalty"
+
+        # Prepare the response
+        response_data = {
+            "title": title,
+            "message": message,
+            "sla_info": sla_info,
+            "sla_violated": sla_violated,
+            "cache_hit": cache_hit,
+            "elapsed_time": elapsed_time
+        }
+
+        return jsonify(response_data), 200
+
     except Exception as e:
-        logging.error(f"Error during Elasticsearch query: {str(e)}")
-        return jsonify({"msg": f"Error getting AI response: {str(e)}"}), 500
+        logging.error(f"Error checking SLA: {str(e)}")
+        return jsonify({"msg": f"Error checking SLA: {str(e)}"}), 500
 
-    elapsed_time = round(time.time() - start_time, 2)
 
-    # Cache the response in Redis and increment rate limit count
-    if Config.USE_REDIS:
-        # Increment rate limit count or set it if not present
-        if current_count:
-            redis_client.incr(rate_limit_key)
-            logging.debug(
-                f"Incremented rate limit count for user '{user_identity}'")
-        else:
-            redis_client.setex(
-                rate_limit_key, Config.RATE_LIMIT_WINDOW_SECONDS, 1)
-            logging.debug(
-                f"Rate limit key set for user '{user_identity}' with a window of {Config.RATE_LIMIT_WINDOW_SECONDS} seconds")
 
-        # Cache the AI response only if the solution is not "No solution found"
-        if solution != "No feasible solution found":
-            redis_client.setex(query, Config.REDIS_CACHE_EXPIRATION, json.dumps(
-                ai_response, ensure_ascii=False))
-            logging.info(
-                f"Cached response for query: '{query}' with expiration {Config.REDIS_CACHE_EXPIRATION} seconds")
-        else:
-            logging.info(
-                f"No feasible solution found for query: '{query}'. Response not cached.")
-
-    # Return the response in a consistent order using OrderedDict
-    response = OrderedDict([
-        ("response", solution),
-        ("cached", "false"),
-        ("time", elapsed_time)
-    ])
-
-    logging.info(f"Returning response for query: '{query}'")
-    return Response(json.dumps(response, ensure_ascii=False), mimetype='application/json; charset=utf-8')
 
 
 @api_bp.route('/upload-documents', methods=['POST'])
@@ -173,45 +129,141 @@ def get_ai_response():
 def upload_documents():
     """
     Endpoint to upload documents to Elasticsearch with embeddings.
+    Supports both plain text and PDF documents.
     """
     try:
-        data = request.get_json()
-        documents = data.get("documents")
+        tc_doc_id = request.form.get("tc_doc_id")
+        if not tc_doc_id:
+            return jsonify({"msg": "TotalCare Doc ID is required."}), 400
 
-        if not documents or not isinstance(documents, list):
-            return jsonify({"msg": "Invalid or missing 'documents' field. Expected a list of documents."}), 400
+        # Check if a document with the same tc_doc_id already exists
+        search_body = {"query": {"match": {"tc_doc_id": tc_doc_id}}}
+        response = es.search(index="pdf_documents", body=search_body)
 
-        for doc in documents:
-            title = doc.get("title")
-            content = doc.get("content")
-            metadata = doc.get("metadata", {})
+        if response["hits"]["hits"]:
+            return jsonify({"msg": f"Document with tc_doc_id {tc_doc_id} already exists."}), 409
 
-            if not title or not content:
-                return jsonify({"msg": "Each document must have 'title' and 'content' fields."}), 400
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify({"msg": "No files uploaded."}), 400
 
-            # Generate embedding
-            embedding = get_embedding(content)
+        for file in files:
+            if not file.filename.endswith(".pdf"):
+                return jsonify({"msg": f"Unsupported file type: {file.filename}"}), 400
+
+            file_path = f"/tmp/{file.filename}"
+            file.save(file_path)
+
+            text = extract_text_from_pdf(file_path)
+            if not text:
+                return jsonify({"msg": f"Failed to extract text from {file.filename}"}), 500
+
+            embedding = get_embedding(text)
             if not embedding:
-                return jsonify({"msg": f"Failed to generate embedding for document '{title}'."}), 500
+                return jsonify({"msg": f"Failed to generate embedding for {file.filename}"}), 500
 
-            # Prepare document structure
-            es_doc = {
-                "title": title,
-                "content": content,
-                "metadata": metadata,
-                "embedding": embedding,
-                "timestamp": datetime.now().isoformat()
+            document = {
+                "tc_doc_id": tc_doc_id,
+                "title": file.filename,
+                "content": text,
+                "hash": generate_document_hash({"title": file.filename, "content": text}),
+                "timestamp": datetime.now().isoformat(),
+                "embedding": embedding
             }
 
-            # Index the document in Elasticsearch
-            es.index(index="customer_contracts", document=es_doc)
+            es.index(index="pdf_documents", document=document)
 
-        return jsonify({"msg": "Documents uploaded successfully"}), 201
+        return jsonify({"msg": "Documents uploaded and indexed successfully."}), 201
 
     except Exception as e:
         logger.error(f"Error uploading documents: {str(e)}")
         return jsonify({"msg": f"Error uploading documents: {str(e)}"}), 500
-    
+
+
+
+@api_bp.route('/delete-document', methods=['DELETE'])
+@jwt_required()
+def delete_document():
+    """
+    Endpoint to delete a document from Elasticsearch by TotalCare Document ID (tc_doc_id).
+    """
+    try:
+        # Get the TotalCare Document ID from the request
+        tc_doc_id = request.args.get("tc_doc_id")
+        if not tc_doc_id:
+            return jsonify({"msg": "TotalCare Doc ID is required."}), 400
+
+        # Search for the document by tc_doc_id
+        search_body = {"query": {"match": {"tc_doc_id": tc_doc_id}}}
+        response = es.search(index="pdf_documents", body=search_body)
+
+        if not response['hits']['hits']:
+            return jsonify({"msg": f"No document found with tc_doc_id: {tc_doc_id}"}), 404
+
+        # Delete the document(s)
+        for hit in response['hits']['hits']:
+            es.delete(index="pdf_documents", id=hit['_id'])
+
+        return jsonify({"msg": f"Document with tc_doc_id {tc_doc_id} deleted successfully."}), 200
+
+    except Exception as e:
+        logger.error(f"Error deleting document: {str(e)}")
+        return jsonify({"msg": f"Error deleting document: {str(e)}"}), 500
+
+
+@api_bp.route('/update-document', methods=['PUT'])
+@jwt_required()
+def update_document():
+    """
+    Endpoint to update a document in Elasticsearch by TotalCare Document ID (tc_doc_id).
+    """
+    try:
+        tc_doc_id = request.form.get("tc_doc_id")
+        if not tc_doc_id:
+            return jsonify({"msg": "TotalCare Doc ID is required."}), 400
+
+        files = request.files.getlist("files")
+        if not files or len(files) != 1:
+            return jsonify({"msg": "Exactly one file must be uploaded for updating."}), 400
+
+        file = files[0]
+        if not file.filename.endswith(".pdf"):
+            return jsonify({"msg": f"Unsupported file type: {file.filename}"}), 400
+
+        file_path = f"/tmp/{file.filename}"
+        file.save(file_path)
+
+        text = extract_text_from_pdf(file_path)
+        if not text:
+            return jsonify({"msg": f"Failed to extract text from {file.filename}"}), 500
+
+        embedding = get_embedding(text)
+        if not embedding:
+            return jsonify({"msg": f"Failed to generate embedding for {file.filename}"}), 500
+
+        search_body = {"query": {"match": {"tc_doc_id": tc_doc_id}}}
+        response = es.search(index="pdf_documents", body=search_body)
+
+        if not response['hits']['hits']:
+            return jsonify({"msg": f"No document found with tc_doc_id: {tc_doc_id}"}), 404
+
+        for hit in response['hits']['hits']:
+            es.update(index="pdf_documents", id=hit['_id'], body={
+                "doc": {
+                    "title": file.filename,
+                    "content": text,
+                    "hash": generate_document_hash({"title": file.filename, "content": text}),
+                    "timestamp": datetime.now().isoformat(),
+                    "embedding": embedding
+                }
+            })
+
+        return jsonify({"msg": f"Document with tc_doc_id {tc_doc_id} updated successfully."}), 200
+
+    except Exception as e:
+        logger.error(f"Error updating document: {str(e)}")
+        return jsonify({"msg": f"Error updating document: {str(e)}"}), 500
+
 
 @api_bp.route('/backup-index', methods=['GET'])
 @jwt_required()

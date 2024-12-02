@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import hashlib
 import requests
 import json
@@ -53,6 +54,7 @@ def create_index():
                 "content": {"type": "text"},
                 "hash": {"type": "text"},
                 "category": {"type": "keyword"},
+                "timestamp": datetime.now().isoformat(),
                 "embedding": {"type": "dense_vector", "dims": 768},
                 "custom_fields": {"type": "object"},
             }
@@ -120,6 +122,7 @@ def index_pdf_file(pdf_path):
         "title": pdf_path,
         "content": text,
         "category": "general",  # You can adjust this dynamically based on the document
+        "timestamp": datetime.now().isoformat(),
         "embedding": embedding,
         "custom_fields": {},  # You can add more custom fields here if needed
     }
