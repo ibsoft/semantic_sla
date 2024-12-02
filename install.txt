@@ -1,0 +1,81 @@
+docker network create elastic
+
+docker run --name es01 --net elastic -p 9200:9200 -p 9300:9300 \
+  -e "discovery.type=single-node" -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" \
+  -v es_data:/usr/share/elasticsearch/data \
+  -m 1GB -it docker.elastic.co/elasticsearch/elasticsearch:8.16.1
+
+
+Install ElasticVue
+
+docker run -p 8080:8080 --name elasticvue            -d cars10/elasticvue
+
+
+elasticsearch.yml
+
+cluster.name: "docker-cluster"
+network.host: 0.0.0.0
+
+#----------------------- BEGIN SECURITY AUTO CONFIGURATION -----------------------
+#
+# The following settings, TLS certificates, and keys have been automatically
+# generated to configure Elasticsearch security features on 24-11-2024 17:05:12
+# --------------------------------------------------------------------------------
+
+# Enable security features
+xpack.security.enabled: false
+
+  ##xpack.security.enrollment.enabled: true
+
+# Enable encryption for HTTP API client connections, such as Kibana, Logstash, and Agents
+xpack.security.http.ssl:
+  enabled: true
+  keystore.path: certs/http.p12
+
+# Enable encryption and mutual authentication between cluster nodes
+xpack.security.transport.ssl:
+  enabled: true
+  verification_mode: certificate
+  keystore.path: certs/transport.p12
+  truststore.path: certs/transport.p12
+#----------------------- END SECURITY AUTO CONFIGURATION -------------------------
+# allow CORS requests from http://your_ip_address:8080 for elastivue
+http.cors.enabled: true
+http.cors.allow-origin: "http://your_ip_addrerss:8080"
+http.cors.allow-headers: X-Requested-With,Content-Type,Content-Length,Authorization
+
+
+push config to docker
+
+docker cp ./elasticsearch.yml es01:/usr/share/elasticsearch/config/elasticsearch.yml
+
+
+export OPENAI_API_KEY="yor_api_key"
+export USE_REDIS=true
+
+./api.sh
+ 
+Usage: ./api.sh {start|stop|usage} [background]
+   start       Start Gunicorn (optional: 'background' to run in the background)
+   stop        Stop the running Gunicorn server
+   usage       Show usage statistics for Gunicorn
+
+
+Install REDIS
+
+docker run --name redis -p 6379:6379 -d redis
+
+
+# Install Semantic API docker container
+
+docker build --no-cache --network=host -t semantic_api .
+
+docker run -p 8008:8008  --network=host -e OPENAI_API_KEY="your_key_here" semantic_api
+
+
+# Backup elasticsearch index 
+
+curl -X GET "http://localhost:5000/api/v1/backup-index?index=issues_n_solutions" -o issues_n_solutions.zip -H "Authorization: Bearer yout_token_here"
+
+apt-get install tesseract-ocr-ell 
+apt-get install tesseract-ocr-script-grek
