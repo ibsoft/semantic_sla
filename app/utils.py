@@ -64,9 +64,7 @@ def generate_document_hash(doc):
     return hashlib.md5(hash_source.encode()).hexdigest()
 
 
-import time
-import json
-import logging
+
 
 def search_sla(query, es):
     start_time = time.time()
