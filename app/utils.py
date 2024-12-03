@@ -141,6 +141,7 @@ def search_sla(query, es):
         # Log the highest scoring document
         logger.debug(f"Highest score document: {highest_score_document}")
         logger.info(f"Highest score document title: {highest_score_document.get('title', 'No Title Available')}")
+        logger.info(f"Highest score document score: {highest_score}")
 
 
         # Get the SLA solution (you may want to adjust this to match your logic)
@@ -169,8 +170,8 @@ def find_sla(query, documents):
     context = [
         {
             "Title": doc["title"],
-            "Context": doc["content"],
-            "Embedding": doc["embedding"]  # Add the embedding of the document for semantic search
+            "Context": doc["content"]
+
         }
         for doc in documents
         
