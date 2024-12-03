@@ -15,12 +15,14 @@ Flask-JWT-Extended==4.7.1
 Flask-SQLAlchemy==3.1.1
 frozenlist==1.5.0
 greenlet==3.1.1
+gunicorn==23.0.0
 idna==3.10
 itsdangerous==2.2.0
 Jinja2==3.1.4
 MarkupSafe==3.0.2
 multidict==6.1.0
 openai==0.28.0
+packaging==24.2
 propcache==0.2.0
 PyJWT==2.10.1
 PyPDF2==3.0.1
