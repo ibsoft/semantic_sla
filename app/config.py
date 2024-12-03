@@ -18,5 +18,5 @@ class Config:
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(BASE_DIR, 'database/app.db')}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     ELASTICSEARCH_URL = "http://localhost:9200"
-    USE_REDIS = True  # Check if Redis caching is enabled
+    USE_REDIS = False  # Check if Redis caching is enabled
     REDIS_CACHE_EXPIRATION = 3600  # Cache expiration in seconds

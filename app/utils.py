@@ -64,6 +64,10 @@ def generate_document_hash(doc):
     return hashlib.md5(hash_source.encode()).hexdigest()
 
 
+import time
+import json
+import logging
+
 def search_sla(query, es):
     start_time = time.time()
     logger.debug(f"Searching text: {query}")
@@ -74,17 +78,20 @@ def search_sla(query, es):
         logger.warning("Failed to generate query embedding")
         raise ValueError("Failed to generate query embedding")
 
-    # Check if the result is in Redis cache
-    cache_key = f"Search:{query}"
-    cached_result = redis_client.get(cache_key)
+    # Skip Redis cache lookup if USE_REDIS is False
+    result = {}
 
-    if cached_result:
-        logger.info("Cache hit, returning cached result")
-        result = json.loads(cached_result)
-        elapsed_time = round(time.time() - start_time, 2)
-        return result, True, elapsed_time
+    if Config.USE_REDIS:
+        cache_key = f"Search:{query}"
+        cached_result = redis_client.get(cache_key)
 
-    # Define the search query combining semantic search and vector search
+        if cached_result:
+            logger.info("Cache hit, returning cached result")
+            result = json.loads(cached_result)
+            elapsed_time = round(time.time() - start_time, 2)
+            return result, True, elapsed_time
+
+    # If no cache or USE_REDIS is False, proceed with the search
     search_query = {
         "query": {
             "bool": {
@@ -97,8 +104,8 @@ def search_sla(query, es):
                     {"knn": {
                         "field": "embedding",  # Assuming your documents store embeddings in the 'embedding' field
                         "query_vector": embedding,
-                        "k": 5,  # Number of top similar results to retrieve
-                        "num_candidates": 10  # Number of candidates to consider before applying the vector search
+                        "k": 5,
+                        "num_candidates": 10
                     }}
                 ],
                 "minimum_should_match": 1
@@ -107,40 +114,53 @@ def search_sla(query, es):
     }
 
     try:
-        # Perform the combined search (semantic + vector)
+        # Perform Elasticsearch search
         response = es.search(index="pdf_documents", body=search_query)
-        documents = []
 
-        # Process the results from Elasticsearch (only extracting title, content)
-        for hit in response["hits"]["hits"]:
-            doc = hit["_source"]
-            # Check if 'embedding' field exists
-            embedding = doc.get("embedding")
-            if embedding:
-                documents.append({
-                    "title": doc.get("title", ""),
-                    "content": doc.get("content", ""),
-                    "embedding": embedding  # Only add embedding if it exists
-                })
-            else:
-                documents.append({
-                    "title": doc.get("title", ""),
-                    "content": doc.get("content", ""),
-                })
-        logger.debug(f"Found {len(documents)} documents for query")
+        # Process the search response
+        documents = []
+        highest_score_document = None
+        highest_score = float('-inf')
+
+        for hit in response['hits']['hits']:
+            score = hit.get('_score', float('-inf'))
+            title = hit['_source'].get('title', 'No Title Available')
+
+            # Track the document with the highest score
+            if score > highest_score:
+                highest_score = score
+                highest_score_document = hit['_source']
+
+            documents.append(hit['_source'])
+
+        # If no results are found
+        if not highest_score_document:
+            logger.warning("No results found in Elasticsearch")
+            return {"msg": "No results found"}, False, round(time.time() - start_time, 2)
+
+        # Log the highest scoring document
+        logger.debug(f"Highest score document: {highest_score_document}")
+        logger.info(f"Highest score document title: {highest_score_document.get('title', 'No Title Available')}")
+
+
+        # Get the SLA solution (you may want to adjust this to match your logic)
+        solution = find_sla(query, [highest_score_document])
+        
+        result = {"solution": solution}
+
+        # Cache the result if required
+        if Config.USE_REDIS:
+            result = {"solution": solution}
+            redis_client.set(cache_key, json.dumps(result))
+
     except Exception as e:
+        # Handle errors and log them
         logger.error(f"Error during Elasticsearch query: {e}")
-        return {"msg": "Error during Elasticsearch query"}, 500
+        return {"msg": "Error during Elasticsearch query"}, False, round(time.time() - start_time, 2)
 
     elapsed_time = round(time.time() - start_time, 2)
-
-    # Classify the query based on the retrieved documents
-    solution = find_sla(query, documents)
-
-    # Cache the result in Redis for future use
-    result = {"solution": solution}
-
     logger.info(f"Search completed in {elapsed_time} seconds")
+    
     return result, False, elapsed_time
 
 
@@ -149,22 +169,28 @@ def find_sla(query, documents):
     context = [
         {
             "Title": doc["title"],
-            "Content": doc["content"],  # Using the content instead of issue
+            "Context": doc["content"],
             "Embedding": doc["embedding"]  # Add the embedding of the document for semantic search
         }
         for doc in documents
+        
     ]
 
     # Create a prompt for OpenAI's model to find a solution for the user query based on title and content
     prompt = f"""
-    Χρησιμοποίησε το παρακάτω περιεχόμενο, ψάξε να βρεις το SLA που πρέπει να απαντήσει ο συνεργάτης για την λύση του προβλήματος:
+    Ενεργείς ως ειδικός βοηθός που παρακολουθεί τις συμβάσεις συνεργατών. Ο στόχος σου είναι να εντοπίσεις SLA (Service Level Agreements) μέσα στο παρεχόμενο περιεχόμενο. Συγκεκριμένα:
+    
+    1. Ψάξε να βρεις πληροφορίες που αφορούν χρόνους απόκρισης των συνεργατών για την επίλυση προβλημάτων.
+    2. Αν οι χρόνοι απόκρισης εξαρτώνται από την τοποθεσία ή άλλες παραμέτρους, δες αν υπάρχει σχετική αναφορά στον τίτλο ή στο μήνυμα του χρήστη.
+
+
+    Χρησιμοποίησε το παρακάτω περιεχόμενο για να βρεις το SLA:
     {json.dumps(context, ensure_ascii=False)}
 
     Ερώτημα Χρήστη: {query}
 
     Απάντησε με:
-    **SLA**: [Παρέχετε το SLA σύμφωνα με το συμβόλαιο που έχεις στη βάση δεδομένων] αλλιώς απαντήστε με "Δεν βρέθηκε εφικτό SLA για το πρόβλημα".
-    
+    **SLA**: [Παρέχετε το SLA σύμφωνα με το συμβόλαιο που έχεις στη βάση δεδομένων]".
     """
 
 
@@ -173,7 +199,7 @@ def find_sla(query, documents):
         model = Config.MODEL
         response = openai.ChatCompletion.create(
             model=model,
-            messages=[{"role": "system", "content": "Είσαι ένας βοηθός που παρακολουθεί τις συμβάσεις με τους συνεργάτες μας. Βρές αν υπάρχει SLA για το παρακάτω περιεχόμενο."},
+            messages=[{"role": "system", "content": "Είσαι ένας βοηθός που παρακολουθεί τις συμβάσεις με τους συνεργάτες μας."},
                       {"role": "user", "content": prompt}]
         )
 

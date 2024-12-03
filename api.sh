@@ -15,10 +15,10 @@ start_gunicorn() {
         echo "Gunicorn is already running."
     else
         if [ "$2" == "background" ]; then
-            gunicorn -w $WORKERS -b $HOST:$PORT $APP_NAME --pid $PID_FILE &
+            gunicorn -w $WORKERS -b $HOST:$PORT $APP_NAME --pid $PID_FILE --timeout 600&
             echo "Gunicorn started in the background with PID $(cat $PID_FILE)."
         else
-            gunicorn -w $WORKERS -b $HOST:$PORT $APP_NAME --pid $PID_FILE
+            gunicorn -w $WORKERS -b $HOST:$PORT $APP_NAME --pid $PID_FILE --timeout 600
             echo "Gunicorn started in the foreground with PID $(cat $PID_FILE)."
         fi
     fi

@@ -72,7 +72,6 @@ def login_user():
     logging.info(f"User '{username}' logged in successfully")
     return jsonify(access_token=access_token)
 
-
 @api_bp.route('/check-sla', methods=['POST'])
 @jwt_required()
 def check_sla():
@@ -81,13 +80,15 @@ def check_sla():
     The response will include information about whether the SLA was violated and if a penalty applies.
     """
     logging.info("SLA Check endpoint accessed")
-    user_identity = get_jwt_identity()
+    user_identity = get_jwt_identity()  # This can be logged for debugging if necessary
+    logging.debug(f"User identity: {user_identity}")
 
     # Retrieve the problem title and message from the user
     data = request.get_json()
     title = data.get("title")
     message = data.get("message")
 
+    # Validate input
     if not title or not message:
         logging.warning("Missing title or message in SLA check request")
         return jsonify({"msg": "Title and message are required"}), 400
@@ -97,9 +98,13 @@ def check_sla():
         result, cache_hit, elapsed_time = search_sla(f"{title} {message}", es)
 
         if "msg" in result:
+            logging.error(f"Error in SLA search: {result['msg']}")
             return jsonify(result), 500  # Return error message if there's an issue
 
-        sla_info = result.get("solution", "No sla found")
+        sla_info = result.get("solution", "No SLA found")
+
+        # Ensure correct encoding of the message, handling the Unicode issue
+        message_decoded = message.encode('utf-8').decode('unicode_escape')
 
         # Check if the SLA has been violated based on the message
         sla_violated = "Penalty" if "delay" in message.lower() else "No penalty"
@@ -107,9 +112,9 @@ def check_sla():
         # Prepare the response
         response_data = {
             "title": title,
-            "message": message,
+            "message": message_decoded,  # Include the decoded message
             "sla_info": sla_info,
-            "sla_violated": sla_violated,
+            #"sla_violated": sla_violated,
             "cache_hit": cache_hit,
             "elapsed_time": elapsed_time
         }
@@ -119,7 +124,6 @@ def check_sla():
     except Exception as e:
         logging.error(f"Error checking SLA: {str(e)}")
         return jsonify({"msg": f"Error checking SLA: {str(e)}"}), 500
-
 
 
 

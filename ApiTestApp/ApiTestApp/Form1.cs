@@ -8,7 +8,11 @@ namespace ApiTestApp
 {
     public partial class MainForm : Form
     {
-        private static readonly HttpClient client = new HttpClient();
+        // Set a default timeout for all HttpClient operations
+        private static readonly HttpClient client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(1000) // Adjust the timeout as needed
+        };
 
         public MainForm()
         {
@@ -183,11 +187,18 @@ namespace ApiTestApp
 
                 dynamic slaData = Newtonsoft.Json.JsonConvert.DeserializeObject(responseBody);
 
-                string formattedResponse = $"SLA Info: {slaData.sla_info}\n\n" +
-                                           $"SLA Violated: {slaData.sla_violated}\n\n" +
-                                           $"Elapsed Time: {slaData.elapsed_time} seconds\n\n" +
-                                           $"Cache Hit: {slaData.cache_hit}";
+                // Format the response
+                string slaInfo = slaData.sla_info ?? "No SLA Info provided";
+                string slaViolated = string.IsNullOrEmpty((string)slaData.sla_violated) ? "No" : "Yes";
+                string elapsedTime = slaData.elapsed_time != null ? $"{slaData.elapsed_time} seconds" : "N/A";
+                string cacheHit = slaData.cache_hit != null ? slaData.cache_hit.ToString() : "Unknown";
 
+                string formattedResponse = $"SLA Info:\n{slaInfo}\n\n" +
+                                           $"SLA Violated: {slaViolated}\n\n" +
+                                           $"Elapsed Time: {elapsedTime}\n\n" +
+                                           $"Cache Hit: {cacheHit}";
+
+                // Display formatted response
                 txtResponse.Text = formattedResponse;
             }
             catch (Exception ex)
@@ -199,6 +210,8 @@ namespace ApiTestApp
                 spinner.Visible = false;
             }
         }
+
+
 
         private void MainForm_Load(object sender, EventArgs e)
         {
