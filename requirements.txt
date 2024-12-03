@@ -23,9 +23,12 @@ MarkupSafe==3.0.2
 multidict==6.1.0
 openai==0.28.0
 packaging==24.2
+pdf2image==1.17.0
+pillow==11.0.0
 propcache==0.2.0
 PyJWT==2.10.1
 PyPDF2==3.0.1
+pytesseract==0.3.13
 redis==5.2.0
 requests==2.32.3
 SQLAlchemy==2.0.36
