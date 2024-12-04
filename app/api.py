@@ -107,7 +107,7 @@ def check_sla():
         message_decoded = message.encode('utf-8').decode('unicode_escape')
 
         # Check if the SLA has been violated based on the message
-        sla_violated = "Penalty" if "delay" in message.lower() else "No penalty"
+        #sla_violated = "Penalty" if "delay" in message.lower() else "No penalty"
 
         # Prepare the response
         response_data = {

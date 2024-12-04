@@ -72,9 +72,12 @@ def search_sla(query, es):
 
     # Generate embedding for the query using semantic model (Ollama API or OpenAI embeddings)
     embedding = get_embedding(query)
+    
     if not embedding:
         logger.warning("Failed to generate query embedding")
         raise ValueError("Failed to generate query embedding")
+    else:
+        logger.info("Created embedding for input query. Success!")
 
     # Skip Redis cache lookup if USE_REDIS is False
     result = {}
@@ -100,7 +103,7 @@ def search_sla(query, es):
                         "fuzziness": "AUTO"
                     }},
                     {"knn": {
-                        "field": "embedding",  # Assuming your documents store embeddings in the 'embedding' field
+                        "field": "embedding",  # The query_vector is compared to the document embeddings in the embedding field to calculate similarity.
                         "query_vector": embedding,
                         "k": 5,
                         "num_candidates": 10
@@ -123,6 +126,9 @@ def search_sla(query, es):
         for hit in response['hits']['hits']:
             score = hit.get('_score', float('-inf'))
             title = hit['_source'].get('title', 'No Title Available')
+            
+            # Log each document's score and title
+            logger.info(f"Document Title: {title}, Score: {score}")           
 
             # Track the document with the highest score
             if score > highest_score:
@@ -177,20 +183,21 @@ def find_sla(query, documents):
 
     # Create a prompt for OpenAI's model to find a solution for the user query based on title and content
     prompt = f"""
-    Ενεργείς ως ειδικός βοηθός που παρακολουθεί τις συμβάσεις συνεργατών. Ο στόχος σου είναι να εντοπίσεις SLA (Service Level Agreements) μέσα στο παρεχόμενο περιεχόμενο. Συγκεκριμένα:
-    
-    1. Ψάξε να βρεις πληροφορίες που αφορούν χρόνους απόκρισης των συνεργατών για την επίλυση προβλημάτων.
-    2. Αν οι χρόνοι απόκρισης εξαρτώνται από την τοποθεσία ή άλλες παραμέτρους, δες αν υπάρχει σχετική αναφορά στον τίτλο ή στο μήνυμα του χρήστη.
+    Ενεργείς ως ειδικός βοηθός που παρακολουθεί τις συμβάσεις συνεργατών. Ο στόχος σου είναι να εντοπίσεις και να συνοψίσεις όλες τις SLA (Service Level Agreements) που σχετίζονται με τον συνεργάτη που περιγράφεται στο παρακάτω περιεχόμενο. Συγκεκριμένα:
 
+    1. Εντόπισε όλα τα SLA που αναφέρονται (χρόνοι απόκρισης, επίπεδα εξυπηρέτησης, γεωγραφικές περιοχές, εξαιρέσεις κ.λπ.).
+    2. Δημιούργησε μια σύντομη περίληψη που περιλαμβάνει τα βασικά σημεία όλων των SLA που ισχύουν για τον συγκεκριμένο συνεργάτη.
 
-    Χρησιμοποίησε το παρακάτω περιεχόμενο για να βρεις το SLA:
+    Χρησιμοποίησε το παρακάτω περιεχόμενο για την ανάλυση:
     {json.dumps(context, ensure_ascii=False)}
 
     Ερώτημα Χρήστη: {query}
 
     Απάντησε με:
-    **SLA**: [Παρέχετε το SLA σύμφωνα με το συμβόλαιο που έχεις στη βάση δεδομένων]".
-    """
+    **Σύνοψη SLA**: [Περίληψη όλων των SLA με τα βασικά σημεία, διατυπωμένα με συνοπτικό τρόπο για τον συγκεκριμένο συνεργάτη].
+"""
+
+
 
 
     try:
@@ -213,9 +220,8 @@ def find_sla(query, documents):
         logger.debug(
             f"Response content: {response['choices'][0]['message']['content']}")
 
-        # Parse the OpenAI response to extract the solution
-        sla = parse_solution_response(
-            response['choices'][0]['message']['content'])
+        # OPEN AI solution
+        sla = response['choices'][0]['message']['content']
         logger.info(f"Solution found: {sla}")
     except Exception as e:
         logger.error(f"Error in OpenAI solution search: {e}")
@@ -223,27 +229,6 @@ def find_sla(query, documents):
 
     return sla
 
-
-
-def parse_solution_response(response_text):
-    try:
-        # Extract the SLA from the response text
-        lines = response_text.split("\n")
-        
-        # Logging the response text for debugging purposes
-        logger.debug(f"Response text:\n{response_text}")
-        
-        # Attempt to extract SLA from the response
-        sla = next((line.split(":")[1].strip() for line in lines if line.startswith("**SLA**")), None)
-        
-        if sla is None:
-            logger.warning("SLA not found in the response")
-            return "Δεν βρέθηκε εφικτό SLA για τη λύση"
-        
-        return sla
-    except Exception as e:
-        logger.error(f"Error parsing response: {e}")
-        return "Δεν βρέθηκε εφικτό SLA για τη λύση"
 
 
 
