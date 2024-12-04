@@ -61,7 +61,7 @@ def generate_document_hash(doc):
     Generate a hash for deduplication based on document title and content.
     """
     hash_source = f"{doc['title']}{doc['content']}"
-    return hashlib.md5(hash_source.encode()).hexdigest()
+    return hashlib.sha256(hash_source.encode()).hexdigest()
 
 
 
@@ -142,7 +142,7 @@ def search_sla(query, es):
         logger.info(f"Highest score document score: {highest_score}")
 
 
-        # Get the SLA solution (you may want to adjust this to match your logic)
+        # Get the SLA solution 
         solution = find_sla(query, [highest_score_document])
         
         result = {"solution": solution}
