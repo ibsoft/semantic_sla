@@ -79,3 +79,8 @@ curl -X GET "http://localhost:5000/api/v1/backup-index?index=issues_n_solutions"
 
 apt-get install tesseract-ocr-ell 
 apt-get install tesseract-ocr-script-grek
+
+
+SSH Tunneling for testing
+
+ssh -L 5000:localhost:5000 user@remote_server_ip
