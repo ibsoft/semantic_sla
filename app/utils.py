@@ -12,6 +12,8 @@ from pdf2image import convert_from_path
 import pytesseract
 import hashlib
 import requests
+from docx import Document
+import pandas as pd
 
 openai.api_key = Config.OPENAI_API_KEY
 
@@ -64,6 +66,30 @@ def generate_document_hash(doc):
     return hashlib.sha256(hash_source.encode()).hexdigest()
 
 
+
+def extract_text_from_docx(file_path):
+    try:
+        doc = Document(file_path)
+        return " ".join(paragraph.text for paragraph in doc.paragraphs)
+    except Exception as e:
+        logger.error(f"Error extracting text from DOCX: {str(e)}")
+        return None
+
+def extract_text_from_txt(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"Error extracting text from TXT: {str(e)}")
+        return None
+
+def extract_text_from_xlsx(file_path):
+    try:
+        df = pd.read_excel(file_path, engine='openpyxl')
+        return "\n".join(df.apply(lambda row: " ".join(row.astype(str)), axis=1))
+    except Exception as e:
+        logger.error(f"Error extracting text from XLSX: {str(e)}")
+        return None
 
 
 def search_sla(query, es):

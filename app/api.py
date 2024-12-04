@@ -7,8 +7,9 @@ from elasticsearch import Elasticsearch
 from flask import Blueprint, Response, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 from .models import db, User
-from .utils import search_sla, get_embedding, generate_document_hash, extract_text_with_ocr, extract_text_from_pdf
+from .utils import search_sla, get_embedding, generate_document_hash, extract_text_with_ocr, extract_text_from_pdf, extract_text_from_docx, extract_text_from_txt, extract_text_from_xlsx
 from . import redis_client
 from datetime import timedelta
 from .config import Config
@@ -17,7 +18,9 @@ import zipfile
 from datetime import datetime
 from flask import send_file
 from elasticsearch import helpers
-
+from PyPDF2 import PdfReader
+from docx import Document
+import pandas as pd
 
 
 logger = logging.getLogger()
@@ -125,15 +128,13 @@ def check_sla():
         logging.error(f"Error checking SLA: {str(e)}")
         return jsonify({"msg": f"Error checking SLA: {str(e)}"}), 500
 
-
-
-
+# Endpoint
 @api_bp.route('/upload-documents', methods=['POST'])
 @jwt_required()
 def upload_documents():
     """
     Endpoint to upload documents to Elasticsearch with embeddings.
-    Supports both plain text and PDF documents.
+    Supports plain text, PDF, DOCX, TXT, and XLSX documents.
     """
     try:
         tc_doc_id = request.form.get("tc_doc_id")
@@ -151,26 +152,41 @@ def upload_documents():
         if not files:
             return jsonify({"msg": "No files uploaded."}), 400
 
+        supported_extensions = {".pdf", ".docx", ".txt", ".xlsx"}
         for file in files:
-            if not file.filename.endswith(".pdf"):
-                return jsonify({"msg": f"Unsupported file type: {file.filename}"}), 400
+            filename = secure_filename(file.filename)
+            file_extension = os.path.splitext(filename)[1].lower()
 
-            file_path = f"/tmp/{file.filename}"
+            if file_extension not in supported_extensions:
+                return jsonify({"msg": f"Unsupported file type: {filename}"}), 400
+
+            file_path = os.path.join("/tmp", filename)
             file.save(file_path)
 
-            text = extract_text_from_pdf(file_path)
+            # Extract text based on file type
+            if file_extension == ".pdf":
+                text = extract_text_from_pdf(file_path)
+            elif file_extension == ".docx":
+                text = extract_text_from_docx(file_path)
+            elif file_extension == ".txt":
+                text = extract_text_from_txt(file_path)
+            elif file_extension == ".xlsx":
+                text = extract_text_from_xlsx(file_path)
+            else:
+                return jsonify({"msg": f"Unsupported file type: {filename}"}), 400
+
             if not text:
-                return jsonify({"msg": f"Failed to extract text from {file.filename}"}), 500
+                return jsonify({"msg": f"Failed to extract text from {filename}"}), 500
 
             embedding = get_embedding(text)
             if not embedding:
-                return jsonify({"msg": f"Failed to generate embedding for {file.filename}"}), 500
+                return jsonify({"msg": f"Failed to generate embedding for {filename}"}), 500
 
             document = {
                 "tc_doc_id": tc_doc_id,
-                "title": file.filename,
+                "title": filename,
                 "content": text,
-                "hash": generate_document_hash({"title": file.filename, "content": text}),
+                "hash": generate_document_hash({"title": filename, "content": text}),
                 "timestamp": datetime.now().isoformat(),
                 "embedding": embedding
             }
@@ -182,6 +198,7 @@ def upload_documents():
     except Exception as e:
         logger.error(f"Error uploading documents: {str(e)}")
         return jsonify({"msg": f"Error uploading documents: {str(e)}"}), 500
+
 
 
 
